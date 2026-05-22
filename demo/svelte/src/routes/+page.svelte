@@ -27,6 +27,18 @@
 	let streamError = $state(/** @type {null | string} */ (null));
 	let streamEvents = $state(0);
 
+	// chromium-rv32 M10: capture the browser-side User-Agent string and
+	// UA Client Hints (Sec-CH-UA-Arch, navigator.userAgentData.platform,
+	// architecture, etc.) after hydration. These come from the *browser*
+	// rather than the request header, so on the rv32 guest they should
+	// say `Linux riscv32` / `riscv` once content_shell's
+	// GetUnifiedPlatform() + GetCpuArchitecture() are patched.
+	let clientUserAgent = $state(/** @type {null | string} */ (null));
+	let clientUaArch = $state(/** @type {null | string} */ (null));
+	let clientUaPlatform = $state(/** @type {null | string} */ (null));
+	let clientUaBitness = $state(/** @type {null | string} */ (null));
+	let clientUaMobile = $state(/** @type {null | boolean} */ (null));
+
 	const allGreen = $derived(
 		status.hydrated && status.domUpdate && status.fetched && status.streamed
 	);
@@ -73,6 +85,44 @@
 		// chromium-rv32 M6 sentinel: Svelte 5 hydration completed and onMount
 		// fired. Parsed out of content_shell stderr by m6-acceptance.sh.
 		console.log('m6:hydrated:' + new Date().toISOString());
+
+		// chromium-rv32 M10: client-side UA snapshot. navigator.userAgent
+		// is the browser-reported string; navigator.userAgentData (UA-CH)
+		// gives us a structured platform/arch/bitness breakdown.
+		try {
+			if (typeof navigator !== 'undefined') {
+				clientUserAgent = navigator.userAgent;
+				console.log('m10:client-ua:' + clientUserAgent);
+				const uad = /** @type {any} */ (navigator).userAgentData;
+				if (uad) {
+					clientUaPlatform = uad.platform ?? null;
+					clientUaMobile = typeof uad.mobile === 'boolean' ? uad.mobile : null;
+					if (typeof uad.getHighEntropyValues === 'function') {
+						uad.getHighEntropyValues(['architecture', 'bitness', 'platform'])
+							.then(/** @param {any} hint */ (hint) => {
+								clientUaArch = hint?.architecture ?? null;
+								clientUaBitness = hint?.bitness ?? null;
+								if (hint?.platform) {
+									clientUaPlatform = hint.platform;
+								}
+								console.log(
+									'm10:client-ua-ch:arch=' +
+										(clientUaArch ?? 'n/a') +
+										':bitness=' +
+										(clientUaBitness ?? 'n/a') +
+										':platform=' +
+										(clientUaPlatform ?? 'n/a')
+								);
+							})
+							.catch(/** @param {any} e */ (e) => {
+								console.log('m10:client-ua-ch-error:' + (e?.message ?? String(e)));
+							});
+					}
+				}
+			}
+		} catch (/** @type {any} */ e) {
+			console.log('m10:client-ua-error:' + (e?.message ?? String(e)));
+		}
 
 		// Auto-trigger the fetch and DOM-update probes after a short delay so
 		// the M6 boot acceptance can detect all four lights without needing a
@@ -142,8 +192,33 @@
 				<dt>ssrAt</dt><dd><code>{data.ssrAt}</code></dd>
 				<dt>serverNonce</dt><dd><code>{data.serverNonce}</code></dd>
 				<dt>serverStartedAt</dt><dd><code>{data.serverStartedAt}</code></dd>
-				<dt>User-Agent</dt><dd><code class="ua">{data.userAgent}</code></dd>
+				<dt>HTTP req User-Agent (server-observed)</dt>
+				<dd><code class="ua">{data.userAgent}</code></dd>
 				<dt>Client address</dt><dd><code>{data.clientAddress}</code></dd>
+			</dl>
+		</div>
+
+		<div class="card">
+			<h2>1b · browser identity (client-side)</h2>
+			<p class="muted">These come from <code>navigator.userAgent</code> and
+				<code>navigator.userAgentData</code> running inside the actual
+				browser. On the rv32 guest they should report the real
+				platform / architecture rather than the SSR default.</p>
+			<dl>
+				<dt>navigator.userAgent</dt>
+				<dd>
+					<code class="ua">{clientUserAgent ?? '(waiting for hydration…)'}</code>
+				</dd>
+				<dt>userAgentData.platform</dt>
+				<dd><code>{clientUaPlatform ?? '(n/a)'}</code></dd>
+				<dt>userAgentData architecture</dt>
+				<dd><code>{clientUaArch ?? '(n/a)'}</code></dd>
+				<dt>userAgentData bitness</dt>
+				<dd><code>{clientUaBitness ?? '(n/a)'}</code></dd>
+				<dt>userAgentData.mobile</dt>
+				<dd>
+					<code>{clientUaMobile === null ? '(n/a)' : String(clientUaMobile)}</code>
+				</dd>
 			</dl>
 		</div>
 

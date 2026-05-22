@@ -76,16 +76,13 @@ v8_use_external_startup_data  = false
 v8_use_perfetto               = false
 v8_enable_temporal_support    = false
 
-# chromium-rv32 M6: disable concurrent builtin generation so the
-# Turboshaft register-allocator-verifier abort (98 vs 150 vreg phi-input
-# mismatch on a Turboshaft rv32 builtin) fires on the main thread and
-# --print-builtin-code can print the failing builtin name immediately
-# before the CHECK_EQ. Without this, the abort happens on a worker
-# thread (DefaultWorkerThreadsTaskRunner) and the name is lost.
-# Cost: mksnapshot takes ~3x longer for rv32 builds; we only build
-# mksnapshot once per gn-gen cycle so it's not on the hot iteration
-# path.
-v8_enable_concurrent_mksnapshot = false
+# chromium-rv32 M10: re-enabled. The 98-vs-150 phi-input vreg mismatch
+# in the register-allocator-verifier that previously forced this flag
+# off was a real miscompile of kAtomicsLoad on rv32, root-caused and
+# fixed by patches/v8/0004-chromium-rv32-m10-atomicpairload-pin-and-cleanup.patch
+# (pin VisitWord32AtomicPairLoad's (base, index) inputs to FIXED
+# registers disjoint from the FIXED a0/a1 outputs).
+v8_enable_concurrent_mksnapshot = true
 
 # chromium-rv32: skip the v8_context_snapshot_generator action. It runs
 # the host (i386) `v8_context_snapshot_generator` against snapshot_blob.bin,

@@ -1,0 +1,34 @@
+diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedder_support/user_agent_utils.cc
+index 608bea5cb3..e182e97ec6 100644
+--- a/components/embedder_support/user_agent_utils.cc
++++ b/components/embedder_support/user_agent_utils.cc
+@@ -324,7 +324,16 @@ std::string GetUnifiedPlatform() {
+ #elif BUILDFLAG(IS_FUCHSIA)
+   return "Fuchsia";
+ #elif BUILDFLAG(IS_LINUX)
++#if defined(ARCH_CPU_RISCV32)
++  // chromium-rv32 M10: report the real RV32 platform in the unified UA so
++  // navigator.userAgent reflects the actual guest architecture instead of
++  // the x86_64 default Chrome reduced-UA fingerprint.
++  return "X11; Linux riscv32";
++#elif defined(ARCH_CPU_RISCV64)
++  return "X11; Linux riscv64";
++#else
+   return "X11; Linux x86_64";
++#endif
+ #elif BUILDFLAG(IS_IOS)
+   if (ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET) {
+     return "iPad; CPU iPad OS 14_0 like Mac OS X";
+@@ -743,6 +752,12 @@ std::string GetCpuArchitecture() {
+               cpu_info.substr(2, 2) == "86") ||
+              base::StartsWith(cpu_info, "x86")) {
+     return "x86";
++  } else if (base::StartsWith(cpu_info, "riscv")) {
++    // chromium-rv32 M10: surface the riscv arch in Sec-CH-UA-Arch and
++    // navigator.userAgentData.architecture instead of returning an empty
++    // string (and a "Unrecognized CPU Architecture" DLOG) on RV32/RV64
++    // Linux guests.
++    return "riscv";
+   }
+ #elif BUILDFLAG(IS_FUCHSIA)
+   std::string cpu_arch = base::SysInfo::ProcessCPUArchitecture();

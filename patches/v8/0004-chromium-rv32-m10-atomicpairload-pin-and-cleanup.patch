@@ -1,0 +1,125 @@
+diff --git a/src/builtins/builtins-sharedarraybuffer-gen.cc b/src/builtins/builtins-sharedarraybuffer-gen.cc
+index b19c353c266..e4c611133c4 100644
+--- a/src/builtins/builtins-sharedarraybuffer-gen.cc
++++ b/src/builtins/builtins-sharedarraybuffer-gen.cc
+@@ -244,7 +244,10 @@ void SharedArrayBufferBuiltinsAssembler::DebugCheckAtomicIndex(
+ 
+ TNode<BigInt> SharedArrayBufferBuiltinsAssembler::BigIntFromSigned64(
+     TNode<AtomicInt64> signed64) {
+-#if defined(V8_HOST_ARCH_32_BIT)
++// chromium-rv32 M10: dispatch on the *target* pointer size, matching the
++// AtomicInt64 type alias in code-assembler.h (see that file's comment for
++// the cross-compile rationale).
++#if defined(V8_TARGET_ARCH_32_BIT)
+   TNode<IntPtrT> low = Projection<0>(signed64);
+   TNode<IntPtrT> high = Projection<1>(signed64);
+   return BigIntFromInt32Pair(low, high);
+@@ -255,7 +258,7 @@ TNode<BigInt> SharedArrayBufferBuiltinsAssembler::BigIntFromSigned64(
+ 
+ TNode<BigInt> SharedArrayBufferBuiltinsAssembler::BigIntFromUnsigned64(
+     TNode<AtomicUint64> unsigned64) {
+-#if defined(V8_HOST_ARCH_32_BIT)
++#if defined(V8_TARGET_ARCH_32_BIT)
+   TNode<UintPtrT> low = Projection<0>(unsigned64);
+   TNode<UintPtrT> high = Projection<1>(unsigned64);
+   return BigIntFromUint32Pair(low, high);
+diff --git a/src/compiler/backend/register-allocator-verifier.cc b/src/compiler/backend/register-allocator-verifier.cc
+index f0e00bd49b8..e00149db30a 100644
+--- a/src/compiler/backend/register-allocator-verifier.cc
++++ b/src/compiler/backend/register-allocator-verifier.cc
+@@ -499,10 +499,17 @@ void RegisterAllocatorVerifier::ValidatePendingAssessment(
+       Assessment* contribution = found_contribution->second;
+ 
+       switch (contribution->kind()) {
+-        case Final:
+-          CHECK_EQ(FinalAssessment::cast(contribution)->virtual_register(),
+-                   expected);
++        case Final: {
++          int actual = FinalAssessment::cast(contribution)->virtual_register();
++          // chromium-rv32 M10: the rv32 InstructionSelector now pins
++          // AtomicWord32PairLoad's (base, index) inputs to fixed registers
++          // (a3, a4) disjoint from the FIXED a0/a1 outputs, so the
++          // constraint resolver no longer emits the self-clobbering gap
++          // move that previously produced phi-input vreg mismatches under
++          // kAtomicsLoad. Restore the upstream CHECK_EQ for rv32.
++          CHECK_EQ(actual, expected);
+           break;
++        }
+         case Pending: {
+           // This happens if we have a diamond feeding into another one, and
+           // the inner one never being used - other than for carrying the value.
+diff --git a/src/compiler/backend/riscv/instruction-selector-riscv32.cc b/src/compiler/backend/riscv/instruction-selector-riscv32.cc
+index a32ebee6f24..85db494f244 100644
+--- a/src/compiler/backend/riscv/instruction-selector-riscv32.cc
++++ b/src/compiler/backend/riscv/instruction-selector-riscv32.cc
+@@ -1279,7 +1279,19 @@ void InstructionSelector::VisitWord32AtomicPairLoad(OpIndex node) {
+   ArchOpcode opcode = kRiscvWord32AtomicPairLoad;
+   AddressingMode addressing_mode = kMode_MRI;
+   InstructionCode code = opcode | AddressingModeField::encode(addressing_mode);
+-  InstructionOperand inputs[] = {g.UseRegister(base), g.UseRegister(index)};
++  // chromium-rv32 M10: pin the (base, index) inputs to fixed registers (a3, a4)
++  // that are disjoint from the FIXED a0/a1 outputs declared below. Upstream
++  // uses g.UseRegister(...) which lets the allocator place a Word32Pair output
++  // chain (the value formerly in a0, e.g. the constant Smi `1`) into a2 across
++  // this op for spill reasons. The constraint resolver then emits a
++  // self-clobbering gap move ([a2, a0]) right before the AtomicPairLoad, which
++  // overwrites the just-computed pair-load base/index in a2 with whatever was
++  // in a0 (the now-irrelevant constant). Pinning the inputs prevents the
++  // allocator from ever choosing a2 for the load's address regs and lifts the
++  // register-allocator-verifier phi-input vreg mismatch (actual=98 expected=150
++  // reported under kAtomicsLoad in mksnapshot). The chosen pins (a3, a4) are
++  // both caller-saved and not used elsewhere as fixed in this op.
++  InstructionOperand inputs[] = {g.UseFixed(base, a3), g.UseFixed(index, a4)};
+   InstructionOperand temps[3];
+   size_t temp_count = 0;
+   temps[temp_count++] = g.TempRegister(t0);
+@@ -1420,6 +1432,18 @@ void InstructionSelector::VisitWord32AtomicPairCompareExchange(OpIndex node) {
+        temps);
+ }
+ 
++// chromium-rv32: 64-bit wide arithmetic stubs. On rv32, true 128-bit add/sub
++// and 64x64->128 multiplication are decomposed by the Int64LoweringReducer
++// into 32-bit operations before instruction selection runs. These functions
++// exist only so the cross-arch InstructionSelector::VisitNode dispatcher
++// can be linked; they should never execute at runtime.
++void InstructionSelector::VisitUint64Add128(OpIndex node) { UNIMPLEMENTED(); }
++void InstructionSelector::VisitUint64Sub128(OpIndex node) { UNIMPLEMENTED(); }
++void InstructionSelector::VisitWord64MulWide(OpIndex node, bool is_signed) {
++  // Should be handled by Int64LoweringReducer.
++  UNREACHABLE();
++}
++
+ // static
+ MachineOperatorBuilder::Flags
+ InstructionSelector::SupportedMachineOperatorFlags() {
+diff --git a/src/compiler/code-assembler.h b/src/compiler/code-assembler.h
+index 9e3fc811a91..72440e04872 100644
+--- a/src/compiler/code-assembler.h
++++ b/src/compiler/code-assembler.h
+@@ -166,12 +166,24 @@ struct ObjectTypeOf<Union<T...>> {
+                                           : ObjectType::kHeapObject;
+ };
+ 
+-#if defined(V8_HOST_ARCH_32_BIT)
++// chromium-rv32 M10: choose BInt and the 64-bit-atomic CSA types based on the
++// *target* arch, not the host. Upstream uses V8_HOST_ARCH_32_BIT here, which
++// for v8's official bot matrix happens to coincide with V8_TARGET_ARCH_32_BIT
++// (host bitness == target bitness for every supported cross-compile). For
++// chromium-rv32 our build runs an x86_64 host but cross-targets RV32, *and*
++// the v8 mksnapshot binary is itself built as a 32-bit i386 host binary (so
++// V8_HOST_ARCH_32_BIT does still happen to be true during mksnapshot's own
++// compile pass) -- but a 64-bit-host-cross-RV32 build would silently fall
++// off the BINT_IS_SMI path and emit Word64 BigInt-from-int64 calls in CSA
++// builtins like Atomics.load. Switch to V8_TARGET_ARCH_32_BIT to make the
++// type choice match the eventual generated code regardless of the host the
++// mksnapshot toolchain happens to use.
++#if defined(V8_TARGET_ARCH_32_BIT)
+ #define BINT_IS_SMI
+ using BInt = Smi;
+ using AtomicInt64 = PairT<IntPtrT, IntPtrT>;
+ using AtomicUint64 = PairT<UintPtrT, UintPtrT>;
+-#elif defined(V8_HOST_ARCH_64_BIT)
++#elif defined(V8_TARGET_ARCH_64_BIT)
+ #define BINT_IS_INTPTR
+ using BInt = IntPtrT;
+ using AtomicInt64 = IntPtrT;

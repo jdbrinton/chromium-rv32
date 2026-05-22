@@ -54,20 +54,40 @@ register clobber" pattern to audit. RV32 V8's standard `CallRuntime`
 saves callee-saved registers correctly; the cited evidence from M6
 was the same trampoline failure observed from a different angle.
 
-### `kAtomicsLoad` / Turboshaft Int64 lowering verifier mismatch
+### `kAtomicsLoad` register-allocator-verifier phi-input vreg mismatch
 
-**Status:** Deferred.
-**Visible symptom:** Turboshaft's Int64-lowering verifier on RV32
-asserts on a phi-input mismatch (`98 vs 150 vreg`) when compiling
-certain builtins. Currently worked around by
-`v8_enable_concurrent_mksnapshot = false` in
-`configs/gn/content-shell.args.gn`, which forces the abort to fire on
-the main thread (where `--print-builtin-code` can print the failing
-builtin name). The build still completes because we never hit the
-runtime path that triggers the actual verify in the M6 workload.
-**Why deferred:** root-causing the mismatch needs Turboshaft expertise
-we haven't paid down yet. The flag stays off as a documented
-performance cost.
+**Status:** **Fixed in M10**
+(`patches/v8/0004-chromium-rv32-m10-atomicpairload-pin-and-cleanup.patch`).
+**Original symptom:** Building V8 with the upstream
+`--turbo_verify_allocation` flag (which is on by default under DCHECK
+builds) tripped seven
+`register-allocator-verifier.cc:CHECK_EQ(actual, expected)` aborts
+during `kAtomicsLoad` codegen with operand
+`[a0|R|w32]`, `actual = vreg 98`, `expected = vreg 150`. M6/M9 worked
+around it with `v8_enable_concurrent_mksnapshot = false` plus a
+log-and-continue relaxation in `register-allocator-verifier.cc`, which
+let mksnapshot finish but generated **incorrect** machine code for any
+JS call that hit `Atomics.load(BigInt64Array, …)`.
+**Root cause:** the rv32 InstructionSelector for
+`RiscvWord32AtomicPairLoad` declared its `(base, index)` inputs with
+the generic `g.UseRegister(...)` policy while pinning its
+`(low, high)` outputs to FIXED `a0`/`a1`. The register allocator was
+therefore free to pick `a2` for the address input (output of
+`RiscvAdd32`) *and* `a2` for the spill destination of the live value
+in `a0` that the C-call sequence inside the codegen would clobber.
+The constraint resolver then emitted a parallel move `[a2 := a0]`
+right before the load, overwriting the load's address with the
+unrelated value previously in `a0`.
+**Fix:** pin the `(base, index)` inputs of
+`VisitWord32AtomicPairLoad` to FIXED `a3` / `a4` so the allocator can
+never choose `a2` for either of them. With the pin in place the
+constraint resolver still picks `a2` as its spill destination but it
+no longer clobbers anything live.
+**Effect:** `v8_enable_concurrent_mksnapshot` flips back to `true`,
+the verifier runs full upstream `CHECK_EQ` on rv32 again, and
+`Atomics.load` against `BigInt64Array` returns the correct value (not
+the previous "value of whatever happened to be in a0 at the call
+site").
 
 ### Disabled or untested optimisation tiers
 
@@ -75,9 +95,9 @@ performance cost.
 |---|---|---|
 | Ignition (interpreter) | ON | Required; the baseline tier. |
 | Turbofan | ON | Required for many shared codegen files to compile. |
-| Turboshaft | ON, but verifier-Int64 path disabled by concurrent-mksnapshot=false | See the kAtomicsLoad entry. |
-| Sparkplug | OFF (`v8_enable_sparkplug = false`) | Independent RV32 backend issues; not investigated in M9. |
-| Maglev | OFF (`v8_enable_maglev = false`) | Same. |
+| Turboshaft | ON, full upstream verifier (M10) | See the kAtomicsLoad entry. |
+| Sparkplug | OFF (`v8_enable_sparkplug = false`) | M10 enabled it and confirmed `v8/src/baseline/riscv/` shares its rv32 codegen with rv64 through `kSystemPointerSize`-parameterised helpers, but the larger Sparkplug-enabled torque-csa graph triggers clang frontend signals during compilation in this build environment (likely memory pressure at default ninja parallelism). The signal is unrelated to the rv32 V8 patches landed in M9/M10. A clean repro requires either a host with more RAM or per-step memory profiling; out of scope for M10. |
+| Maglev | OFF (`v8_enable_maglev = false`) | `v8/src/maglev/riscv/maglev-ir-riscv.cc` carries `V8_TARGET_ARCH_RISCV32` `#ifdef`s, but the wider Maglev integration (deopt-frame layout, on-stack-replacement, tier-up trampoline) has not been audited under our M9 trampoline fix. Deferred to M11+. |
 | LiftOff (Wasm baseline) | ON (codegen-static-asserts patched) | Required by enabled `v8_enable_webassembly`; not exercised by the M6 demo. |
 
 The demo runs on Ignition + Turbofan, with tier-up via the

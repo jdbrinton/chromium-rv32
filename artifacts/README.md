@@ -7,6 +7,7 @@ are two small curated PNGs that show what a successful run looks like.
 |---|---|
 | `example-m6-all-green.png` (67 KB) | CDP `Page.captureScreenshot` of `content_shell` running the Svelte demo inside the rv32 guest, taken immediately after the page printed `m6:all-green`. All four indicator dots are green and the timestamp banner is populated. |
 | `example-m7-click-proof.png` (287 KB) | Frame served by `tools/cdp-vnc-bridge.py` to a VNC client, captured *after* the bridge has injected a synthetic mouse click on the "bump counter" button. The counter has incremented, proving an end-to-end input round-trip from host RFB → bridge → CDP `Input.dispatchMouseEvent` → content_shell → Svelte reactive update → screencast → bridge → RFB. |
+| `m10-rv32-ua-screenshot.png` (81 KB) | Same workload as `example-m6-all-green.png`, captured after the M10 V8 / Chromium fixes. The Svelte demo's "1b · browser identity (client-side)" card now shows `navigator.userAgent = Mozilla/5.0 (X11; Linux riscv32) ...` instead of the previous `X11; Linux x86_64` default. Both the SSR-observed and client-side User-Agents agree, all four indicator dots are still green, and the snapshot is from a `mksnapshot` run with the upstream `register-allocator-verifier` `CHECK_EQ` restored and `v8_enable_concurrent_mksnapshot=true`. |
 
 ## Where runtime artefacts go
 
