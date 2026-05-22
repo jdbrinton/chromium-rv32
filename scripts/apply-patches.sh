@@ -4,14 +4,15 @@
 # Idempotent: a patch already applied is detected and skipped.
 #
 # Patch layout:
-#   patches/v8/0001-chromium-rv32-cumulative.patch       -> src/v8/
-#   patches/v8/0002-chromium-rv32-build-system.patch     -> src/v8/build/    (separate submodule)
-#   patches/chromium/0001-chromium-rv32-chromium-side.patch        -> src/chromium/src/
-#   patches/chromium/0002-chromium-rv32-third_party-angle.patch    -> src/chromium/src/third_party/angle/
-#   patches/chromium/0002-chromium-rv32-third_party-lss.patch      -> src/chromium/src/third_party/lss/
-#   patches/chromium/0002-chromium-rv32-third_party-swiftshader.patch -> src/chromium/src/third_party/swiftshader/
-#   patches/chromium/0002-chromium-rv32-v8.patch         -> src/chromium/src/v8/
-#   patches/buildroot/                                   -> currently empty
+#   patches/v8/0001-chromium-rv32-cumulative.patch                                        -> src/v8/
+#   patches/v8/0002-chromium-rv32-build-system.patch                                      -> src/v8/build/   (separate submodule)
+#   patches/v8/0003-chromium-rv32-m9-trampoline-osr-urgency-scratch.patch                 -> src/v8/         (M9 InterpreterEntryTrampoline correctness fix)
+#   patches/chromium/0001-chromium-rv32-chromium-side.patch                               -> src/chromium/src/
+#   patches/chromium/0002-chromium-rv32-third_party-angle.patch                           -> src/chromium/src/third_party/angle/
+#   patches/chromium/0002-chromium-rv32-third_party-lss.patch                             -> src/chromium/src/third_party/lss/
+#   patches/chromium/0002-chromium-rv32-third_party-swiftshader.patch                     -> src/chromium/src/third_party/swiftshader/
+#   patches/chromium/0002-chromium-rv32-v8.patch                                          -> src/chromium/src/v8/
+#   patches/buildroot/                                                                    -> currently empty
 
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"

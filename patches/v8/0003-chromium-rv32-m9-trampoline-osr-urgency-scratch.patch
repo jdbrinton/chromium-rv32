@@ -1,0 +1,70 @@
+From: chromium-rv32
+Subject: [PATCH] chromium-rv32 M9: fix RV32 InterpreterEntryTrampoline SEGV by using a real scratch in ResetFeedbackVectorOsrUrgency
+
+Targets V8 src/builtins/riscv/builtins-riscv.cc.
+
+Root cause:
+  Generate_InterpreterEntryTrampoline pins a4 to
+  kJavaScriptCallDispatchHandleRegister on RV64 but leaves a4 free on
+  RV32 (kJavaScriptCallDispatchHandleRegister is no_reg there). The
+  per-function RegisterAllocator therefore allocates `feedback_cell` to
+  a4 on RV32. The very next call --
+    ResetFeedbackVectorOsrUrgency(masm, feedback_vector, a4);
+  -- hard-codes a4 as the byte-mask scratch and clobbers feedback_cell.
+  Several frames later the trampoline does
+    __ Lw(scratch, FieldMemOperand(feedback_cell,
+                                   offsetof(FeedbackCell, interrupt_budget_)));
+  and faults at libv8.so+<symbol>+0x118 with SEGV_MAPERR @ 0x8 every
+  time a user function exhausts its interrupt budget (~10 invocations,
+  reproducible with Array.from({length:10}, (_,i)=>i)).
+
+Fix:
+  Replace the hard-coded a4 with a macro-assembler scratch obtained via
+  UseScratchRegisterScope, mirroring the upstream pattern used at the
+  second ResetFeedbackVectorOsrUrgency call site higher up in this
+  file. The scratch comes from the masm's reserved scratch pool, which
+  is disjoint from the per-function RegisterAllocator pool, so it can
+  never alias feedback_cell on any architecture.
+
+Verified by:
+  * milestones/m6-svelte-in-browser/probe/d8-triggers/ -- all 10
+    qemu-user d8 reproducers (T1..T10) PASS without the path-A
+    workaround.
+  * milestones/m9-v8-correctness -- full Chromium content_shell run
+    inside qemu-system-riscv32 against the Svelte 5 hydration demo
+    captures four m6:* sentinels + m6:all-green + a rendered four-light
+    PNG (artifacts/m6-screenshot-20260522-022142.png) with zero
+    InterpreterEntryTrampoline SEGV markers in the log.
+
+This single change replaces the M6 path-A workaround that had disabled
+the interrupt-budget mechanism entirely on RV32. With this fix
+applied, JS functions are once again allowed to tier up via the normal
+budget-interrupt path.
+
+diff --git a/src/builtins/riscv/builtins-riscv.cc b/src/builtins/riscv/builtins-riscv.cc
+--- a/src/builtins/riscv/builtins-riscv.cc
++++ b/src/builtins/riscv/builtins-riscv.cc
+@@ -1339,7 +1339,22 @@ void Builtins::Generate_InterpreterEntryTrampoline(
+                                 &push_stack_frame);
+ 
+ #ifndef V8_JITLESS
+-  ResetFeedbackVectorOsrUrgency(masm, feedback_vector, a4);
++  // chromium-rv32 M9 fix: upstream passes `a4` as the OSR-urgency-reset
++  // scratch. On RV64 that is safe because `a4` is pinned to
++  // kJavaScriptCallDispatchHandleRegister and `feedback_cell` is therefore
++  // never allocated to `a4`. On RV32 dispatch_handle is `no_reg`, `a4` is
++  // unpinned, and the register allocator hands `a4` to `feedback_cell` --
++  // the same register the upstream code then clobbers as a temp. The
++  // post-frame-setup `Lw scratch, FieldMemOperand(feedback_cell, ...)`
++  // then dereferences a garbage pointer and SEGVs at the start of the
++  // "Reduce interrupt budget" sequence (M6 path-A repro). Use a proper
++  // macro-assembler scratch register here, mirroring the pattern used at
++  // the second ResetFeedbackVectorOsrUrgency call site higher up in this
++  // file. See milestones/m9-v8-correctness/STATUS.md.
++  {
++    UseScratchRegisterScope temps(masm);
++    ResetFeedbackVectorOsrUrgency(masm, feedback_vector, temps.Acquire());
++  }
+ 
+   // Increment invocation count for the function.
+   DEFINE_PINNED(count, a6);

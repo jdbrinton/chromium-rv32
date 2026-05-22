@@ -16,35 +16,43 @@
 
 ### `Generate_InterpreterEntryTrampoline` bytecode-budget interrupt path
 
-**Status:** Deferred.
-**Visible symptom:** Without the workaround, the rv32 guest's
-`content_shell` SEGVs inside
-`Builtins_InterpreterEntryTrampoline` early in any non-trivial
-JavaScript program (`SEGV_MAPERR @ 0x8` is the canonical signature).
-The Svelte 5 demo failed end-to-end on the first long-running script.
-**Workaround in M6 (path A):** in
-`src/v8/src/builtins/riscv/builtins-riscv.cc`, the
-`Generate_InterpreterEntryTrampoline` was edited to disable the
-bytecode-budget interrupt → tier-up path. This sidesteps the SEGV
-unconditionally at the cost of never promoting a function to a higher
-optimisation tier.
-**Why deferred:** the underlying bug is suspected to live in the way
-the trampoline saves caller registers across the `CallRuntime` that
-implements the interrupt; we have evidence but no fix. See the
-**Post-CallRuntime register-preservation bug** entry below.
+**Status:** **Fixed in M9** (`patches/v8/0003-chromium-rv32-m9-trampoline-osr-urgency-scratch.patch`).
+**Original symptom:** Without the fix, the rv32 guest's `content_shell`
+SEGVs inside `Builtins_InterpreterEntryTrampoline` early in any
+non-trivial JavaScript program (`SEGV_MAPERR @ 0x8` is the canonical
+signature). The Svelte 5 demo failed end-to-end on the first
+long-running script.
+**Root cause:** On RV32, `kJavaScriptCallDispatchHandleRegister`
+resolves to `no_reg`, so the per-function `RegisterAllocator` is free
+to hand `a4` to `feedback_cell`. The upstream V8 code then passes a
+hard-coded `a4` as a scratch register to
+`ResetFeedbackVectorOsrUrgency`, which clobbers `feedback_cell`. The
+SEGV fires later in the same trampoline when the budget-interrupt
+sequence dereferences the corrupted pointer. On RV64 the same source
+code happens to be safe because `a4` is pinned to
+`kJavaScriptCallDispatchHandleRegister` and `feedback_cell` cannot be
+allocated to it.
+**Fix:** Replace the hard-coded `a4` with a real macro-assembler
+scratch obtained via `UseScratchRegisterScope::Acquire()`. This
+matches the upstream pattern used at the secondary
+`ResetFeedbackVectorOsrUrgency` call site in the same file. With the
+fix applied, JS functions tier up via the normal interrupt-budget
+mechanism on RV32 again. The previously-required M6 path-A workaround
+(which disabled the budget-interrupt path entirely) is no longer
+needed.
 
 ### Post-CallRuntime register-preservation bug
 
-**Status:** Deferred.
-**Visible symptom:** Live-across-CallRuntime registers are sometimes
-clobbered on RV32 in builtins that didn't explicitly save them.
-Manifests as garbage values in JS objects after a runtime call. The
-M6 path-A workaround sidesteps this for the trampoline path because
-the path is never taken; other builtins that depend on the same
-invariant have not been audited.
-**Why deferred:** the fix is small per-builtin (push the live regs
-before the call) but auditing every CallRuntime site requires a more
-systematic pass. M8 documents it; future milestones will tackle it.
+**Status:** **Not a real bug; closed in M9.**
+**What we thought it was:** M6 hypothesised that the post-trampoline
+SEGV signalled a generic "live registers clobbered across
+`CallRuntime`" issue on RV32 that other builtins might also trip on.
+**What it actually was:** The trampoline SEGV had a single specific
+cause -- the OSR-urgency-scratch register collision described above --
+and is gone with the M9 fix. There is no separate "post-CallRuntime
+register clobber" pattern to audit. RV32 V8's standard `CallRuntime`
+saves callee-saved registers correctly; the cited evidence from M6
+was the same trampoline failure observed from a different angle.
 
 ### `kAtomicsLoad` / Turboshaft Int64 lowering verifier mismatch
 
@@ -68,12 +76,14 @@ performance cost.
 | Ignition (interpreter) | ON | Required; the baseline tier. |
 | Turbofan | ON | Required for many shared codegen files to compile. |
 | Turboshaft | ON, but verifier-Int64 path disabled by concurrent-mksnapshot=false | See the kAtomicsLoad entry. |
-| Sparkplug | OFF (`v8_enable_sparkplug = false`) | Tier-up plumbing on RV32 is buggy (see the InterpreterEntryTrampoline entry). |
+| Sparkplug | OFF (`v8_enable_sparkplug = false`) | Independent RV32 backend issues; not investigated in M9. |
 | Maglev | OFF (`v8_enable_maglev = false`) | Same. |
 | LiftOff (Wasm baseline) | ON (codegen-static-asserts patched) | Required by enabled `v8_enable_webassembly`; not exercised by the M6 demo. |
 
-The demo runs entirely on Ignition + Turbofan. Performance numbers are
-in the "Performance expectations under QEMU" section below.
+The demo runs on Ignition + Turbofan, with tier-up via the
+interrupt-budget mechanism restored by the M9 trampoline fix.
+Performance numbers are in the "Performance expectations under QEMU"
+section below.
 
 ---
 

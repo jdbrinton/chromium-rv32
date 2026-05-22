@@ -39,9 +39,11 @@ guest:
 * **Not** a full Chromium UI. Only the headless `content_shell` is
   built. No browser chrome, no bookmarks, no Chrome Sync.
 * **Not** a performant runtime. V8's RV32 Maglev / Sparkplug tiers are
-  off; we ride the Ignition interpreter + Turbofan, with several
-  Turbofan tier-up paths disabled to work around register-allocator
-  bugs. JavaScript runs orders of magnitude slower than on x86_64.
+  off; we ride the Ignition interpreter + Turbofan (tier-up via the
+  bytecode-budget interrupt path was restored in M9 — see
+  [`docs/known-limitations.md`](docs/known-limitations.md)).
+  JavaScript still runs orders of magnitude slower than on x86_64
+  because of QEMU TCG translation overhead.
 * **Not** a production GPU pipeline. SwiftShader, Dawn, Vulkan, and
   ANGLE are disabled; rendering uses Skia's CPU rasteriser.
 * **Not** a substitute for upstreaming RV32 Chromium support. The
