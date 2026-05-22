@@ -1,0 +1,250 @@
+# GN args for Chromium content_shell, cross-compiled from x86_64 host
+# to riscv32-linux-gnu.
+#
+# Used by scripts/build-content-shell.sh, which copies this into
+#   build/m4-content-shell/args.gn
+# (with the TO_BE_REPLACED placeholder substituted for the absolute
+# sysroot path) before invoking gn gen.
+#
+# This file deliberately mirrors configs/gn/v8-d8.args.gn for the
+# V8/toolchain/sysroot side, then layers content_shell-specific knobs
+# on top (Ozone headless backend, disabled extensions/PDF/printing,
+# etc.). See docs/architecture.md for the rationale behind each major
+# feature flag.
+
+# === target / host ===
+target_cpu       = "riscv32"
+v8_target_cpu    = "riscv32"
+target_os        = "linux"
+current_cpu      = "riscv32"
+current_os       = "linux"
+
+# === toolchain ===
+is_clang                  = true
+use_lld                   = true
+clang_use_chrome_plugins  = false
+
+# === sysroot ===
+target_sysroot = "TO_BE_REPLACED_WITH_ABSOLUTE_SYSROOT_PATH"
+use_sysroot    = true
+
+# === build flavour ===
+is_debug                 = false
+is_official_build        = false
+symbol_level             = 0
+strip_debug_info         = true
+treat_warnings_as_errors = false
+fatal_linker_warnings    = false
+
+# Use a component build to shrink ninja link times. Each .so file is
+# easier to recover from on a hung link, and content_shell is a
+# headless smoke test anyway.
+is_component_build = true
+
+# === V8 (mirror M1 Option-C config) ===
+# RV32 V8 support is "scheduled for removal" upstream; the
+# instruction-selector-riscv32.cc compile-time errors unless this
+# arg is true. See v8-dev thread VSkorXmM84E and v8/BUILD.gn:1430.
+v8_riscv_enable_deprecated_riscv32 = true
+v8_jitless                    = false
+v8_enable_turbofan            = true
+v8_enable_sparkplug           = false
+v8_enable_maglev              = false
+# WebAssembly: keep enabled. We do not exercise wasm in the Svelte 5
+# demo, but disabling it pulls a long tail of V8 RV32 backend +
+# turboshaft Simd128*Op references out from under #if V8_ENABLE_SIMD128
+# guards that the chromium-pinned V8 d1a8e87 RV32 port does not carry.
+# Cheaper to leave wasm on and relax a couple of liftoff/macro-assembler
+# static_assert()s that don't fit RV32's (independent simd128 +
+# i64-reg-pair) shape; see patches in v8/src/wasm/baseline/ and
+# v8/src/codegen/riscv/.
+v8_enable_webassembly         = true
+v8_enable_pointer_compression = false
+v8_enable_sandbox             = false
+v8_enable_i18n_support        = false
+# Embed the startup snapshot directly into libv8.so. We tried flipping
+# this to true (matching M1 d8, which runs the Svelte 5 bundle on qemu
+# cleanly), but `snapshot_blob.bin` ended up containing rv32 builtins
+# regardless of v8_use_external_startup_data, and the host
+# v8_context_snapshot_generator SEGVs trying to load them. That test
+# also confirmed the M6 trampoline crash (SEGV_MAPERR @ 0x8 inside
+# Builtins_InterpreterEntryTrampoline) is in the mksnapshot output's
+# rv32 builtins themselves, not in how content_shell loads them.
+# So embedded vs external delivery is not the lever; keeping embedded
+# (and use_v8_context_snapshot=false below) lets ninja finish.
+v8_use_external_startup_data  = false
+v8_use_perfetto               = false
+v8_enable_temporal_support    = false
+
+# chromium-rv32 M6: disable concurrent builtin generation so the
+# Turboshaft register-allocator-verifier abort (98 vs 150 vreg phi-input
+# mismatch on a Turboshaft rv32 builtin) fires on the main thread and
+# --print-builtin-code can print the failing builtin name immediately
+# before the CHECK_EQ. Without this, the abort happens on a worker
+# thread (DefaultWorkerThreadsTaskRunner) and the name is lost.
+# Cost: mksnapshot takes ~3x longer for rv32 builds; we only build
+# mksnapshot once per gn-gen cycle so it's not on the hot iteration
+# path.
+v8_enable_concurrent_mksnapshot = false
+
+# chromium-rv32: skip the v8_context_snapshot_generator action. It runs
+# the host (i386) `v8_context_snapshot_generator` against snapshot_blob.bin,
+# which contains rv32 builtins -> the host V8 jumps to rv32 instructions
+# and SEGVs. content_shell only needs the regular startup snapshot, not
+# the per-Blink-context snapshot, so dropping this action is harmless.
+use_v8_context_snapshot         = false
+
+# === PartitionAlloc ===
+# 64-bit pool / cage / BRP all assume a 64-bit address space; we disable
+# them and let glibc malloc back chromium's allocations. (PA is normally
+# the perf default; we sacrifice that for portability on RV32.)
+use_partition_alloc_as_malloc = false
+enable_backup_ref_ptr_support = false
+
+# === linker quirks ===
+use_debug_fission = false
+
+# === skip remote / Goma / reclient ===
+# use_goma is gone in HEAD chromium; only use_remoteexec / use_reclient remain.
+use_remoteexec = false
+use_reclient   = false
+
+# === Rust ===
+# We do need Rust enabled at gn gen time because too many sub-targets
+# (skia bridge, qr code generator, devtools, etc.) `assert(enable_rust)`
+# at parse-time. The actual rustc invocations happen lazily; if they
+# fail at ninja time, we'll patch them then.
+enable_rust = true
+
+# === system libraries we don't pull in for headless content_shell ===
+# (matches headless preset; also keep udev off since we don't have it
+# in the sysroot)
+use_glib = false
+use_dbus = false
+use_udev = false
+
+# === Headless preset ===
+# Mirrors //build/args/headless.gn -- the upstream "headless chrome"
+# args template. Provides a known-good combination of Ozone + bundled
+# fontconfig + embedded ICU/v8 startup data + no system audio/dbus/etc.
+use_ozone                       = true
+ozone_auto_platforms            = false
+ozone_platform                  = "headless"
+ozone_platform_headless         = true
+headless_use_embedded_resources = true
+headless_enable_commands        = false
+headless_use_prefs              = false
+use_bundled_fontconfig          = true
+icu_use_data_file               = false
+use_alsa                        = false
+use_bluez                       = false
+use_gio                         = false
+use_kerberos                    = false
+use_libpci                      = false
+use_pulseaudio                  = false
+use_gtk                         = false
+use_pangocairo                  = false
+v8_enable_lazy_source_positions = false
+# Our buildroot sysroot doesn't ship libxkbcommon (and we don't need a
+# keyboard layout engine for a headless smoke). Without this the
+# pkg_config for xkbcommon hard-fails.
+use_xkbcommon                   = false
+# NSS isn't in the sysroot. content_shell can validate certs via the
+# built-in chrome root store + BoringSSL without NSS.
+use_nss_certs                   = false
+# Qt linux native theme integration -- not in sysroot, not relevant.
+# `use_qt` itself isn't a declared GN arg in HEAD Chromium (only the
+# version-suffixed variants are), so we set only those.
+use_qt5                         = false
+use_qt6                         = false
+
+# === feature flags ===
+# Most of Chromium's feature flags are interdependent and several
+# //chrome/* BUILD.gn files assert on them. Since we never link //chrome
+# into content_shell, the runtime cost of those features is zero --
+# `ninja content_shell` only builds the transitive deps of the shell.
+# So we leave the controversial flags at their defaults rather than
+# fighting individual asserts.
+#
+# Only override flags that affect content_shell's own build directly.
+enable_widevine    = false
+enable_library_cdms = false
+
+# Disable CUPS-based printing: our buildroot sysroot doesn't ship
+# cups-config, and printing isn't relevant to a headless smoke test.
+use_cups          = false
+use_cups_ipp      = false
+
+# GPU acceleration: skip the heavy graphics stack for a headless smoke.
+# SwiftShader (software GL) is heavy; skia ganesh CPU path is enough.
+use_dawn                   = false
+skia_use_dawn              = false
+enable_vulkan              = false
+# skia_use_vulkan: no longer a declare_args() in HEAD; left out.
+# Override headless.gn defaults: SwiftShader pulls in marl which has
+# RV32-incompatible fiber-switching assembly. ANGLE's vulkan backend
+# also pulls swiftshader. Disable both.
+angle_enable_vulkan        = false
+angle_enable_swiftshader   = false
+# chromium-rv32: enable_swiftshader already defaults to false for rv32
+# (see ui/gl/features.gni), but enable_swiftshader_vulkan defaults to
+# true unconditionally and pulls in libvk_swiftshader.so. That .so links
+# against swiftshader's Subzero JIT engine, whose target lowering layer
+# only ships X86/X86_64/ARM32/MIPS32 backends -- linking on rv32 yields
+# undefined symbols for X8632::, X8664::, ARM32::, MIPS32:: namespaces.
+# Disable Vulkan-via-SwiftShader for headless rv32; software rendering
+# falls back to Skia's CPU rasteriser.
+enable_swiftshader         = false
+enable_swiftshader_vulkan  = false
+# Dawn pulls in swiftshader via its own `dawn_use_swiftshader` flag
+# (data_deps from //third_party/dawn/src/dawn/native:sources). That
+# data_dep is independent of Chromium's enable_swiftshader knob and
+# defaults to !is_android && !is_ios, so we need to flip it off here.
+# We also have use_dawn=false above; this is the belt to that suspender.
+dawn_use_swiftshader       = false
+
+# Build a slimmer audio surface (no PulseAudio, no ALSA backend).
+rtc_use_pipewire          = false
+use_pulseaudio            = false
+use_alsa                  = false
+use_cras                  = false
+
+# === XNNPACK / WebNN ===
+# XNNPACK is the high-perf NN inference kernel library used by Chromium's
+# tflite path (and indirectly by WebNN's transpose-folding fast path).
+# Its BUILD.gn only enumerates x86/x64/arm/arm64/riscv64 source lists; rv32
+# falls through and exports zero symbols, which then break linking of
+# libservices_webnn_webnn_service.so with undefined refs to
+# xnn_run_transpose_nd_x{8,16,32,64} / xnn_init_hardware_config / etc.
+# LiteRT (the next-gen wrapper around TFLite that's also pulled into
+# webnn_service) likewise references TfLiteXNNPackDelegateCreate/Default
+# unconditionally. Easiest path: disable both the xnnpack-backed TFLite
+# and LiteRT delegates so WebNN compiles with the pure CPU fallback.
+# We don't run ML inference in the Svelte 5 smoke test anyway.
+build_tflite_with_xnnpack = false
+webnn_use_tflite          = false
+webnn_use_litert          = false
+
+# === media stack ===
+# Disable FFmpeg: the chromium tree only ships pre-generated config headers
+# for {ia32,x64,arm,arm-neon,arm64,riscv64}, no riscv32. Media playback is
+# not needed for our headless Svelte smoke test.
+media_use_ffmpeg              = false
+enable_ffmpeg_video_decoders  = false
+# libaom (AV1 encode) is not needed either; the gn target still parses
+# but compilation of its sources happens only if linked. We routed
+# riscv32 -> "generic" config in third_party/libaom/BUILD.gn as a
+# belt-and-suspenders.
+
+# === cert verification ===
+# Keep chrome_root_store_only at its Linux default (true). The bundled
+# Chrome Root Store does not require NSS at runtime, but a few helper
+# files (test_root_certs_builtin.cc, Linux impl of
+# CreateSslSystemTrustStoreChromeRoot) are gated on USE_NSS_CERTS in
+# upstream Chromium. We instead carry small patches in net/BUILD.gn
+# and net/cert/internal/system_trust_store.cc to compile those helpers
+# unconditionally on Linux when chrome_root_store_supported is on.
+
+# === safe-stack / CFI / TSAN off; orthogonal to our port ===
+is_cfi                    = false
+use_thin_lto              = false

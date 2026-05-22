@@ -1,0 +1,83 @@
+# GN args for V8 d8, cross-compiled from x86_64 host to riscv32 Linux.
+#
+# Used by scripts/build-v8-d8.sh, which copies this into
+#   build/m1-v8-d8/args.gn
+# (with the TO_BE_REPLACED placeholder substituted for the absolute
+# sysroot path) before invoking `gn gen` and `ninja d8`.
+
+# === target / host ===
+target_cpu       = "riscv32"
+v8_target_cpu    = "riscv32"
+target_os        = "linux"
+current_cpu      = "riscv32"
+current_os       = "linux"
+
+# === toolchain ===
+is_clang                = true
+use_lld                 = true
+clang_use_chrome_plugins = false
+# Bundled clang from V8's third_party/llvm-build/ is used by default when
+# is_clang=true. No need to set clang_base_path explicitly.
+
+# === sysroot ===
+# Populated by scripts/10-build-sysroot.sh; the d8 build script overrides
+# this with the absolute path before invoking gn gen.
+target_sysroot = "TO_BE_REPLACED_WITH_ABSOLUTE_SYSROOT_PATH"
+use_sysroot    = true
+
+# === build flavour ===
+is_debug         = false
+is_official_build = false
+symbol_level     = 0
+strip_debug_info = true
+treat_warnings_as_errors = false  # RV32 codegen warns
+
+# === V8 features (Option C: 637ded7 pre-RV32-deprecation pin) ===
+# Pre-deprecation V8 had working RV32 backends + WebAssembly + TurboFan.
+# Many shared codegen files unconditionally reference Wasm symbols and
+# TurboFan opcodes, so disabling them on this pin actually breaks the
+# build (F15). Leave them enabled. Sparkplug and Maglev stay off to keep
+# the surface area minimal -- they aren't needed to satisfy the d8 demo.
+v8_jitless                    = false
+v8_enable_turbofan            = true   # required by shared codegen
+v8_enable_sparkplug           = false  # tier omitted, smaller build
+v8_enable_maglev              = false  # tier omitted, smaller build
+v8_enable_webassembly         = true   # required by shared codegen
+v8_enable_pointer_compression = false  # 32-bit ABI; PC has no headroom
+v8_enable_sandbox             = false  # sandbox cage assumes 64-bit VM
+v8_enable_i18n_support        = false  # drops ICU dependency for d8
+v8_use_external_startup_data  = true
+v8_use_perfetto               = false
+
+# === PartitionAlloc ===
+# Disable BackupRefPtr and the partition_alloc-as-malloc replacement. The
+# 64-bit-only pool/cage assumptions in PA conflict with riscv32; we'll
+# patch PA properly in M4 when content_shell needs it. For d8 we sidestep
+# entirely.
+use_partition_alloc_as_malloc = false
+enable_backup_ref_ptr_support = false
+
+# === linker quirks ===
+# -gsplit-dwarf is incompatible with RISC-V linker relaxation.
+use_debug_fission = false
+
+# === skip remote / Goma / reclient ===
+use_remoteexec = false
+use_reclient   = false
+use_goma       = false
+
+# === skip system libraries d8 doesn't need ===
+# glib pulls a heavy pkg-config dance we don't need for d8.
+use_glib = false
+use_dbus = false
+use_udev = false
+
+# === no Rust for d8 standalone ===
+# Rust support pulls in compiler-rt builtins, which the bundled Chromium
+# clang doesn't ship for riscv32-unknown-linux-gnu. d8 itself is pure C++
+# so disabling Rust here is safe; we'll have to revisit for content_shell.
+enable_rust = false
+
+# v8_enable_temporal_support => third_party/rust/temporal_capi (Rust). Off.
+# Temporal is a relatively new TC39 API; Svelte 5 itself doesn't need it.
+v8_enable_temporal_support = false

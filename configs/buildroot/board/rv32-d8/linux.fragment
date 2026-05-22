@@ -1,0 +1,41 @@
+# Kernel knobs needed for a headless QEMU virt guest. Most of these are
+# already on in `rv32_defconfig`; pinning them explicitly so the boot
+# image we ship is reproducible.
+
+# Serial console on the QEMU 16550 UART.
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+
+# Initramfs unpacked at boot.
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+
+# virtio-mmio devices (block + net are spawned by qemu virt machine).
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_BALLOON=y
+CONFIG_VIRTIO_CONSOLE=y
+
+# Networking (so the guest can fetch the Svelte demo over the user-mode
+# slirp later in M6). Slim, no IPv6 stack at this stage.
+CONFIG_NET=y
+CONFIG_INET=y
+CONFIG_PACKET=y
+CONFIG_UNIX=y
+
+# Procfs/sysfs/tmpfs needed by busybox and modern userspace.
+CONFIG_PROC_FS=y
+CONFIG_SYSFS=y
+CONFIG_TMPFS=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+
+# 9P (virtio-9p) for sharing host directories with the guest -- handy
+# during M2 if we want to hot-swap the d8 binary without rebuilding the
+# image.
+CONFIG_NET_9P=y
+CONFIG_NET_9P_VIRTIO=y
+CONFIG_9P_FS=y
+CONFIG_9P_FS_POSIX_ACL=y

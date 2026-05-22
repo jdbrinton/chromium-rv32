@@ -1,0 +1,75 @@
+diff --git a/src/codegen/riscv/macro-assembler-riscv.cc b/src/codegen/riscv/macro-assembler-riscv.cc
+index 4e4550b1..14bd5773 100644
+--- a/src/codegen/riscv/macro-assembler-riscv.cc
++++ b/src/codegen/riscv/macro-assembler-riscv.cc
+@@ -25,7 +25,13 @@
+ #include "src/objects/heap-number.h"
+ #include "src/runtime/runtime.h"
+ #include "src/snapshot/snapshot.h"
++
++// chromium-rv32 patch: wasm-code-manager.h refuses to compile when wasm
++// is disabled. Mirror what other arch backends do (see arm64/x64).
++// (Kept unconditional here when wasm is enabled to match upstream.)
++#if V8_ENABLE_WEBASSEMBLY
+ #include "src/wasm/wasm-code-manager.h"
++#endif  // V8_ENABLE_WEBASSEMBLY
+ 
+ // Satisfy cpplint check, but don't include platform-specific header. It is
+ // included recursively via macro-assembler.h.
+@@ -638,10 +644,17 @@ void MacroAssembler::CallRecordWriteStub(Register object, Register slot_address,
+   // need to be caller saved.
+   DCHECK_EQ(WriteBarrierDescriptor::ObjectRegister(), object);
+   DCHECK_EQ(WriteBarrierDescriptor::SlotAddressRegister(), slot_address);
++  // chromium-rv32 patch: gate wasm path the same way arm64/x64 do, so the
++  // file still compiles when v8_enable_webassembly=false.
++#if V8_ENABLE_WEBASSEMBLY
+   if (mode == StubCallMode::kCallWasmRuntimeStub) {
+     auto wasm_target =
+         static_cast<Address>(wasm::WasmCode::GetRecordWriteBuiltin(fp_mode));
+     Call(wasm_target, RelocInfo::WASM_STUB_CALL);
++#else
++  // For balance.
++  if (false) {
++#endif  // V8_ENABLE_WEBASSEMBLY
+   } else {
+     CallBuiltin(Builtins::RecordWrite(fp_mode));
+   }
+diff --git a/src/common/segmented-table.h b/src/common/segmented-table.h
+index 924398eb..6cbcf615 100644
+--- a/src/common/segmented-table.h
++++ b/src/common/segmented-table.h
+@@ -140,7 +140,15 @@ class V8_EXPORT_PRIVATE SegmentedTable {
+ 
+   // We expect the FreelistHead struct to fit into a single atomic word.
+   // Otherwise, access to it would be slow.
++  //
++  // chromium-rv32 patch: the RV32A extension only provides 32-bit
++  // atomic ops, so the 64-bit FreelistHead (2x uint32_t) cannot be
++  // lock-free natively. Relax the assertion on riscv32; std::atomic
++  // will fall back to a mutex-protected implementation, which costs
++  // performance but stays correct.
++#if !defined(V8_TARGET_ARCH_RISCV32)
+   static_assert(std::atomic<FreelistHead>::is_always_lock_free);
++#endif
+ 
+   SegmentedTable() = default;
+   SegmentedTable(const SegmentedTable&) = delete;
+diff --git a/src/heap/memory-pool.h b/src/heap/memory-pool.h
+index 89a46091..0b2672f5 100644
+--- a/src/heap/memory-pool.h
++++ b/src/heap/memory-pool.h
+@@ -251,7 +251,14 @@ class MemoryPool final {
+   std::atomic<base::TimeTicks> posted_time_;
+   std::unique_ptr<CancelableTaskManager> cancellable_task_manager_;
+ 
++  // chromium-rv32 patch: RV32's A extension only provides 32-bit native
++  // atomics. base::TimeTicks is 8 bytes, so std::atomic<TimeTicks> on RV32
++  // falls back to a mutex-internally-locked path: still correct, just
++  // slower. Relax the perf assert on RV32 (same as patch 8 on segmented-
++  // table.h).
++#if !defined(V8_TARGET_ARCH_RISCV32)
+   static_assert(std::atomic<base::TimeTicks>::is_always_lock_free);
++#endif
+ };
+ 
+ }  // namespace v8::internal

@@ -1,0 +1,28 @@
+#!/bin/sh
+#
+# Boot-time hook: at the tail of buildroot's rcS, drop a clear banner
+# announcing d8 is on the system, then run the acceptance script so
+# automated runs collect output without needing an interactive shell.
+#
+# Skipped if /etc/no-autorun-d8 exists (drop that file to debug
+# interactively without the auto-acceptance pass clobbering output).
+
+case "$1" in
+start)
+	if [ -e /etc/no-autorun-d8 ]; then
+		echo "S99-run-d8: /etc/no-autorun-d8 present; skipping auto-acceptance"
+		exit 0
+	fi
+	if [ -x /opt/v8/m2-acceptance.sh ]; then
+		/opt/v8/m2-acceptance.sh
+	else
+		echo "S99-run-d8: /opt/v8/m2-acceptance.sh missing"
+	fi
+	;;
+stop)
+	;;
+*)
+	echo "Usage: $0 {start|stop}"
+	exit 1
+	;;
+esac

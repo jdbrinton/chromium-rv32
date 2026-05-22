@@ -1,0 +1,29 @@
+diff --git a/gni/angle.gni b/gni/angle.gni
+index 6c7ef24..6c20c7d 100644
+--- a/gni/angle.gni
++++ b/gni/angle.gni
+@@ -145,7 +145,8 @@ declare_args() {
+     angle_64bit_current_cpu = true
+   } else if (current_cpu == "arm" || current_cpu == "x86" ||
+              current_cpu == "mipsel" || current_cpu == "s390" ||
+-             current_cpu == "ppc" || current_cpu == "loong32") {
++             current_cpu == "ppc" || current_cpu == "loong32" ||
++             current_cpu == "riscv32") {  # chromium-rv32 patch
+     angle_64bit_current_cpu = false
+   } else {
+     assert(false, "Unknown current CPU: $current_cpu")
+diff --git a/src/common/SimpleMutex.cpp b/src/common/SimpleMutex.cpp
+index 4ed0af5..9284167 100644
+--- a/src/common/SimpleMutex.cpp
++++ b/src/common/SimpleMutex.cpp
+@@ -31,6 +31,10 @@ namespace priv
+ #    if defined(ANGLE_PLATFORM_LINUX) || defined(ANGLE_PLATFORM_ANDROID)
+ namespace
+ {
++// chromium-rv32 patch: rv32 only ships SYS_futex_time64; alias it.
++#if !defined(SYS_futex) && defined(SYS_futex_time64)
++#define SYS_futex SYS_futex_time64
++#endif
+ ANGLE_INLINE void SysFutex(void *addr, int op, int val, int val3)
+ {
+     syscall(SYS_futex, addr, op, val, nullptr, nullptr, val3);

@@ -1,0 +1,66 @@
+#!/bin/sh
+#
+# Boot-time hook: mount the chromium-rootfs.ext4 image (attached as a
+# virtio-blk device by 70-boot-chromium-guest.sh) at /usr/local/chromium
+# before S98-run-content-shell-m5 runs.
+#
+# We try /dev/vda and /dev/vdb in order; whichever has the m5-chromium
+# label gets mounted read-only.
+
+case "$1" in
+start)
+	if [ -e /usr/local/chromium/content_shell ]; then
+		echo "S97-mount-chromium-rootfs: /usr/local/chromium already populated; skipping"
+		exit 0
+	fi
+	mkdir -p /usr/local/chromium
+	# Buildroot's busybox init does not populate virtio-blk device nodes
+	# under /dev by default (no mdev rule matches `vd[a-z]`), so we
+	# either need to run `mdev -s` to rescan or mknod by hand. Use
+	# `mdev -s` because it picks up the major/minor from sysfs.
+	if [ ! -b /dev/vda ] && [ -e /sys/block/vda ]; then
+		echo "S97-mount-chromium-rootfs: running mdev -s to populate /dev/vd*"
+		mdev -s 2>/dev/null || true
+	fi
+	echo "S97-mount-chromium-rootfs: candidates in /dev:"
+	ls -la /dev/vd* 2>&1 | sed 's/^/    /' || true
+	echo "S97-mount-chromium-rootfs: /proc/partitions:"
+	cat /proc/partitions 2>/dev/null | sed 's/^/    /' || true
+	mounted=""
+	for dev in /dev/vda /dev/vdb /dev/vdc /dev/vdd; do
+		[ -b "${dev}" ] || { echo "S97-mount-chromium-rootfs: skip ${dev} (not a block device)"; continue; }
+		# Prefer blkid match on LABEL=m5-chromium, but fall back to
+		# blindly trying ext4 mounts in /dev/vd* order (busybox blkid
+		# may not be present, and content_shell's own ext4 LABEL is
+		# the only ext4 mount we'd ever attempt).
+		label=""
+		if command -v blkid >/dev/null 2>&1; then
+			label="$(blkid "${dev}" 2>/dev/null | sed -n 's/.*LABEL="\([^"]*\)".*/\1/p')"
+		fi
+		if [ -n "${label}" ] && [ "${label}" != "m5-chromium" ]; then
+			echo "S97-mount-chromium-rootfs: skip ${dev} (LABEL=${label})"
+			continue
+		fi
+		echo "S97-mount-chromium-rootfs: trying ${dev}${label:+ (LABEL=$label)} -> /usr/local/chromium"
+		mount_err="$(mount -t ext4 -o ro "${dev}" /usr/local/chromium 2>&1)"
+		if [ $? -eq 0 ] && mountpoint -q /usr/local/chromium; then
+			mounted="${dev}"
+			break
+		fi
+		echo "S97-mount-chromium-rootfs: mount ${dev} failed: ${mount_err}"
+	done
+	if [ -z "${mounted}" ]; then
+		echo "S97-mount-chromium-rootfs: no mountable ext4 in /dev/vd*; content_shell will be unavailable"
+	else
+		echo "S97-mount-chromium-rootfs: mounted ${mounted} (ro) at /usr/local/chromium"
+		ls /usr/local/chromium | head -5 | sed 's/^/    /'
+	fi
+	;;
+stop)
+	mountpoint -q /usr/local/chromium && umount /usr/local/chromium || true
+	;;
+*)
+	echo "Usage: $0 {start|stop}"
+	exit 1
+	;;
+esac

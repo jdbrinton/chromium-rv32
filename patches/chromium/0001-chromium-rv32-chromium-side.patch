@@ -1,0 +1,524 @@
+diff --git a/base/allocator/partition_allocator/partition_alloc.gni b/base/allocator/partition_allocator/partition_alloc.gni
+index 024484a82f..bd9b5f29a1 100644
+--- a/base/allocator/partition_allocator/partition_alloc.gni
++++ b/base/allocator/partition_allocator/partition_alloc.gni
+@@ -82,7 +82,8 @@ if (current_cpu == "x64" || current_cpu == "arm64" || current_cpu == "arm64e" ||
+   assert(current_cpu != "arm64e" || (is_ios && target_environment == "device"))
+   has_64_bit_pointers = true
+ } else if (current_cpu == "x86" || current_cpu == "arm" ||
+-           current_cpu == "wasm") {
++           current_cpu == "wasm" ||
++           current_cpu == "riscv32") {  # chromium-rv32 patch
+   has_64_bit_pointers = false
+ } else {
+   assert(false, "Unknown CPU: $current_cpu")
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/build_config.h b/base/allocator/partition_allocator/src/partition_alloc/build_config.h
+index a124902743..66f38d7243 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/build_config.h
++++ b/base/allocator/partition_allocator/src/partition_alloc/build_config.h
+@@ -212,6 +212,11 @@
+ #define PA_ARCH_CPU_RISCV64
+ #define PA_ARCH_CPU_64_BITS
+ #define PA_ARCH_CPU_LITTLE_ENDIAN
++#elif defined(__riscv) && (__riscv_xlen == 32)
++// chromium-rv32 patch: RV32GC target.
++#define PA_ARCH_CPU_RISCV32
++#define PA_ARCH_CPU_32_BITS
++#define PA_ARCH_CPU_LITTLE_ENDIAN
+ #endif
+ 
+ // The part below can be generated with the following script:
+@@ -328,6 +333,14 @@
+ #endif
+ #undef PA_ARCH_CPU_RISCV64
+ 
++// chromium-rv32 patch: PA_ARCH_CPU_RISCV32 buildflag plumbing.
++#if defined(PA_ARCH_CPU_RISCV32)
++#define PA_BUILDFLAG_INTERNAL_PA_ARCH_CPU_RISCV32() (1)
++#else
++#define PA_BUILDFLAG_INTERNAL_PA_ARCH_CPU_RISCV32() (0)
++#endif
++#undef PA_ARCH_CPU_RISCV32
++
+ #if defined(PA_ARCH_CPU_S390)
+ #define PA_BUILDFLAG_INTERNAL_PA_ARCH_CPU_S390() (1)
+ #else
+diff --git a/base/allocator/partition_allocator/src/partition_alloc/spinning_mutex.cc b/base/allocator/partition_allocator/src/partition_alloc/spinning_mutex.cc
+index 0301845fc3..3e05c1dee1 100644
+--- a/base/allocator/partition_allocator/src/partition_alloc/spinning_mutex.cc
++++ b/base/allocator/partition_allocator/src/partition_alloc/spinning_mutex.cc
+@@ -159,6 +159,11 @@ PA_ALWAYS_INLINE long FutexSyscall(volatile void* ftx, int op, int value) {
+   int saved_errno = errno;
+   errno = 0;
+ 
++  // chromium-rv32 patch: rv32 (and other 32-bit-time-t-deprecated arches)
++  // only ship the time64 form of the futex syscall in current glibc.
++#if !defined(SYS_futex) && defined(SYS_futex_time64)
++#define SYS_futex SYS_futex_time64
++#endif
+   long retval = syscall(SYS_futex, ftx, op | FUTEX_PRIVATE_FLAG, value, nullptr,
+                         nullptr, 0);
+   if (retval == -1) {
+diff --git a/base/profiler/stack_copier_signal.cc b/base/profiler/stack_copier_signal.cc
+index fed4895415..c5965c7c8d 100644
+--- a/base/profiler/stack_copier_signal.cc
++++ b/base/profiler/stack_copier_signal.cc
+@@ -32,6 +32,12 @@ namespace base {
+ 
+ namespace {
+ 
++// chromium-rv32 patch: rv32 (and other 32-bit-time-t-deprecated arches)
++// only ship the time64 form of the futex syscall.
++#if !defined(SYS_futex) && defined(SYS_futex_time64)
++#define SYS_futex SYS_futex_time64
++#endif
++
+ // Waitable event implementation with futex and without DCHECK(s), since signal
+ // handlers cannot allocate memory or use pthread api.
+ class AsyncSafeWaitableEvent {
+diff --git a/base/sampling_heap_profiler/lock_free_bloom_filter.h b/base/sampling_heap_profiler/lock_free_bloom_filter.h
+index 3f98807487..362bd16bb5 100644
+--- a/base/sampling_heap_profiler/lock_free_bloom_filter.h
++++ b/base/sampling_heap_profiler/lock_free_bloom_filter.h
+@@ -120,7 +120,12 @@ class LockFreeBloomFilter {
+   // Accessed with std::memory_order_relaxed since the class doesn't synchronize
+   // access to pointed-to memory. Instead pointers passed to Add() are treated
+   // as opaque keys.
++#if !(defined(__riscv) && (__riscv_xlen == 32))
++  // chromium-rv32: RV32A only provides 32-bit atomics; 64-bit atomics
++  // use libatomic libcalls (not lock-free). This sampling profiler is
++  // optional; we accept the fallback when targeting rv32.
+   static_assert(std::atomic<LockFreeBloomFilterBits>::is_always_lock_free);
++#endif
+   std::atomic<LockFreeBloomFilterBits> bits_ = 0;
+ };
+ 
+diff --git a/base/synchronization/lock_subtle.h b/base/synchronization/lock_subtle.h
+index d06c0e6b50..edeff25d2f 100644
+--- a/base/synchronization/lock_subtle.h
++++ b/base/synchronization/lock_subtle.h
+@@ -67,6 +67,10 @@ static inline void YieldProcessor() {
+   // Manually encode the instruction to support older toolchains.
+   // See also https://sourceware.org/pipermail/libc-alpha/2024-June/157737.html
+   __asm__ __volatile__(".insn i 0x0f, 0, x0, x0, 0x010");
++#elif defined(ARCH_CPU_RISCV32)
++  // chromium-rv32 patch: same Zihintpause / hint encoding as rv64.
++  // (the pause hint encoding is XLEN-independent.)
++  __asm__ __volatile__(".insn i 0x0f, 0, x0, x0, 0x010");
+ #else
+ #error "Unsupported architecture for YieldProcessor()"
+ #endif  // ARCH
+diff --git a/build/build_config.h b/build/build_config.h
+index 0e3bcb4558..480ea51bab 100644
+--- a/build/build_config.h
++++ b/build/build_config.h
+@@ -375,6 +375,12 @@
+ #define ARCH_CPU_RISCV64 1
+ #define ARCH_CPU_64_BITS 1
+ #define ARCH_CPU_LITTLE_ENDIAN 1
++#elif defined(__riscv) && (__riscv_xlen == 32)
++// chromium-rv32 patch: RV32GC target.
++#define ARCH_CPU_RISCV_FAMILY 1
++#define ARCH_CPU_RISCV32 1
++#define ARCH_CPU_32_BITS 1
++#define ARCH_CPU_LITTLE_ENDIAN 1
+ #else
+ #error Please add support for your architecture in build/build_config.h
+ #endif
+diff --git a/build/config/BUILD.gn b/build/config/BUILD.gn
+index 72ccd0823e..4fe33bdc3c 100644
+--- a/build/config/BUILD.gn
++++ b/build/config/BUILD.gn
+@@ -215,6 +215,12 @@ config("default_libs") {
+       "pthread",
+       "rt",
+     ]
++    if (current_cpu == "riscv32") {
++      # chromium-rv32 patch: RV32A only provides 32-bit atomics. gcc/clang
++      # lower 64-bit __atomic_* builtins to libcalls that live in libatomic
++      # (built by gcc, copied into the sysroot from buildroot output).
++      libs += [ "atomic" ]
++    }
+   }
+ }
+ 
+diff --git a/build/config/clang/BUILD.gn b/build/config/clang/BUILD.gn
+index c38670a244..d01f7be2a3 100644
+--- a/build/config/clang/BUILD.gn
++++ b/build/config/clang/BUILD.gn
+@@ -200,6 +200,9 @@ template("clang_lib") {
+           _dir = "loongarch64-unknown-linux-gnu"
+         } else if (current_cpu == "riscv64") {
+           _dir = "riscv64-unknown-linux-gnu"
++        } else if (current_cpu == "riscv32") {
++          # chromium-rv32 patch
++          _dir = "riscv32-unknown-linux-gnu"
+         } else if (current_cpu == "ppc64") {
+           _dir = "ppc64le-unknown-linux-gnu"
+         } else if (current_cpu == "s390x") {
+diff --git a/build/config/compiler_cpu_abi.gn b/build/config/compiler_cpu_abi.gn
+index ae62bab587..0a6bf7a64f 100644
+--- a/build/config/compiler_cpu_abi.gn
++++ b/build/config/compiler_cpu_abi.gn
+@@ -346,6 +346,17 @@ if ((is_posix && !is_apple) || is_fuchsia) {
+       cpu_abi_ldflags += [ "--target=riscv64-linux-gnu" ]
+     }
+     cpu_abi_cflags += [ "-mabi=lp64d" ]
++  } else if (current_cpu == "riscv32") {
++    # chromium-rv32 patch: target rv32gc with the ilp32d ABI to match the
++    # buildroot sysroot we link against (toolchain/sysroot/).
++    if (is_clang && !is_android) {
++      cpu_abi_cflags += [ "--target=riscv32-linux-gnu" ]
++      cpu_abi_ldflags += [ "--target=riscv32-linux-gnu" ]
++    }
++    cpu_abi_cflags += [
++      "-march=rv32gc",
++      "-mabi=ilp32d",
++    ]
+   } else if (current_cpu == "loong64") {
+     if (is_clang) {
+       cpu_abi_cflags += [ "--target=loongarch64-linux-gnu" ]
+diff --git a/build/config/rust.gni b/build/config/rust.gni
+index af3dfac457..7d496a6b98 100644
+--- a/build/config/rust.gni
++++ b/build/config/rust.gni
+@@ -241,6 +241,9 @@ if (is_linux || is_chromeos) {
+     }
+   } else if (current_cpu == "riscv64") {
+     rust_abi_target = "riscv64gc-unknown-linux-gnu"
++  } else if (current_cpu == "riscv32") {
++    # chromium-rv32 patch
++    rust_abi_target = "riscv32gc-unknown-linux-gnu"
+   } else if (current_cpu == "ppc64") {
+     rust_abi_target = "powerpc64le-unknown-linux-gnu"
+   } else if (current_cpu == "s390x") {
+@@ -394,6 +397,9 @@ if (current_cpu == "x86") {
+   rust_target_arch = "powerpc64"
+ } else if (current_cpu == "riscv64") {
+   rust_target_arch = "riscv64"
++} else if (current_cpu == "riscv32") {
++  # chromium-rv32 patch
++  rust_target_arch = "riscv32"
+ } else if (current_cpu == "loong64") {
+   rust_target_arch = "loongarch64"
+ }
+diff --git a/build/rust/known-target-triples.txt b/build/rust/known-target-triples.txt
+index fc4780bf65..3fc39c66f7 100644
+--- a/build/rust/known-target-triples.txt
++++ b/build/rust/known-target-triples.txt
+@@ -29,6 +29,7 @@ i686-linux-android
+ i686-pc-windows-msvc
+ i686-unknown-linux-gnu
+ loongarch64-unknown-linux-gnu
++riscv32gc-unknown-linux-gnu
+ riscv64-linux-android
+ riscv64gc-unknown-linux-gnu
+ thumbv7neon-linux-androideabi
+diff --git a/build/toolchain/linux/BUILD.gn b/build/toolchain/linux/BUILD.gn
+index a6e20a05c5..2c0b2cce45 100644
+--- a/build/toolchain/linux/BUILD.gn
++++ b/build/toolchain/linux/BUILD.gn
+@@ -144,6 +144,15 @@ clang_v8_toolchain("clang_x86_v8_mips") {
+   }
+ }
+ 
++# chromium-rv32 patch: V8 host tools (torque/mksnapshot/etc.) built as x86
++# (32-bit pointers) so the snapshot they emit matches the riscv32 target.
++clang_v8_toolchain("clang_x86_v8_riscv32") {
++  toolchain_args = {
++    current_cpu = "x86"
++    v8_current_cpu = "riscv32"
++  }
++}
++
+ clang_v8_toolchain("clang_x64_v8_arm64") {
+   toolchain_args = {
+     current_cpu = "x64"
+@@ -172,6 +181,14 @@ clang_v8_toolchain("clang_x64_v8_riscv64") {
+   }
+ }
+ 
++# chromium-rv32 patch: V8 simulator on x64 host targeting riscv32 instructions.
++clang_v8_toolchain("clang_x64_v8_riscv32") {
++  toolchain_args = {
++    current_cpu = "x64"
++    v8_current_cpu = "riscv32"
++  }
++}
++
+ clang_v8_toolchain("clang_x64_v8_loong64") {
+   toolchain_args = {
+     current_cpu = "x64"
+@@ -266,6 +283,35 @@ clang_toolchain("clang_riscv64") {
+   }
+ }
+ 
++# chromium-rv32 patch: native rv32 cross with bundled clang.
++clang_toolchain("clang_riscv32") {
++  enable_linker_map = true
++  toolchain_args = {
++    current_cpu = "riscv32"
++    current_os = "linux"
++    is_clang = true
++  }
++}
++
++# chromium-rv32 patch: fallback to a system gcc cross (riscv32-linux-gnu-*).
++gcc_toolchain("riscv32") {
++  toolprefix = "riscv32-linux-gnu"
++
++  cc = "${toolprefix}-gcc"
++  cxx = "${toolprefix}-g++"
++
++  readelf = "${toolprefix}-readelf"
++  nm = "${toolprefix}-nm"
++  ar = "${toolprefix}-ar"
++  ld = cxx
++
++  toolchain_args = {
++    current_cpu = "riscv32"
++    current_os = "linux"
++    is_clang = false
++  }
++}
++
+ gcc_toolchain("riscv64") {
+   toolprefix = "riscv64-linux-gnu"
+ 
+diff --git a/content/gpu/BUILD.gn b/content/gpu/BUILD.gn
+index 3a31d22435..e7814b7404 100644
+--- a/content/gpu/BUILD.gn
++++ b/content/gpu/BUILD.gn
+@@ -123,8 +123,9 @@ target(link_target_type, "gpu_sources") {
+   }
+ 
+   # Use DRI on desktop Linux builds.
+-  if (current_cpu != "s390x" && current_cpu != "ppc64" && is_linux &&
+-      !is_castos) {
++  # chromium-rv32 patch: skip on riscv32 (no DRI in our sysroot).
++  if (current_cpu != "s390x" && current_cpu != "ppc64" &&
++      current_cpu != "riscv32" && is_linux && !is_castos) {
+     configs += [ "//build/config/linux/dri" ]
+   }
+ }
+diff --git a/media/gpu/sandbox/BUILD.gn b/media/gpu/sandbox/BUILD.gn
+index 7987b932c6..cab4dd3374 100644
+--- a/media/gpu/sandbox/BUILD.gn
++++ b/media/gpu/sandbox/BUILD.gn
+@@ -25,8 +25,9 @@ source_set("sandbox") {
+   if (use_v4l2_codec) {
+     deps += [ "//media/gpu/v4l2" ]
+   }
+-  if (current_cpu != "s390x" && current_cpu != "ppc64" && is_linux &&
+-      !is_castos) {
++  if (current_cpu != "s390x" && current_cpu != "ppc64" &&
++      current_cpu != "riscv32" && is_linux && !is_castos) {
++    # chromium-rv32 patch: skip DRI on rv32 (no DRI in sysroot).
+     # For DRI_DRIVER_DIR.
+     configs += [ "//build/config/linux/dri" ]
+   }
+diff --git a/skia/BUILD.gn b/skia/BUILD.gn
+index 9b70ea8c92..05d87df681 100644
+--- a/skia/BUILD.gn
++++ b/skia/BUILD.gn
+@@ -997,6 +997,8 @@ skia_source_set("skia_opts") {
+     # Conditional and empty body needed to avoid assert() below.
+   } else if (current_cpu == "riscv64") {
+     # Conditional and empty body needed to avoid assert() below.
++  } else if (current_cpu == "riscv32") {
++    # chromium-rv32 patch: empty body, skia uses portable C for rv32.
+   } else if (current_cpu == "loong64") {
+     deps += [ ":skia_opts_lasx" ]
+   } else {
+diff --git a/third_party/crashpad/crashpad/util/linux/thread_info.h b/third_party/crashpad/crashpad/util/linux/thread_info.h
+index 808b35a3af..80b931c17e 100644
+--- a/third_party/crashpad/crashpad/util/linux/thread_info.h
++++ b/third_party/crashpad/crashpad/util/linux/thread_info.h
+@@ -30,7 +30,7 @@
+ #endif
+ 
+ // x86_64 has compilation errors if asm/ptrace.h is #included.
+-#if defined(ARCH_CPU_RISCV64)
++#if defined(ARCH_CPU_RISCV64) || defined(ARCH_CPU_RISCV32)
+ #include <asm/ptrace.h>
+ #endif
+ 
+@@ -87,6 +87,11 @@ union ThreadContext {
+     uint32_t padding1_;
+ #elif defined(ARCH_CPU_RISCV64)
+     // 32 bit RISC-V not supported
++#elif defined(ARCH_CPU_RISCV32)
++    // chromium-rv32 patch: mirrors rv32 user_regs_struct from
++    // <asm/ptrace.h>: pc + 31 GPRs, each `unsigned long` (32-bit).
++    uint32_t pc;
++    uint32_t regs[31];
+ #else
+ #error Port.
+ #endif  // ARCH_CPU_X86_FAMILY
+@@ -144,13 +149,15 @@ union ThreadContext {
+     // Reflects user_regs_struct in asm/ptrace.h.
+     uint64_t pc;
+     uint64_t regs[31];
++#elif defined(ARCH_CPU_RISCV32)
++    // chromium-rv32 patch: no 64-bit variant on rv32.
+ #else
+ #error Port.
+ #endif  // ARCH_CPU_X86_FAMILY
+   } t64;
+ 
+ #if defined(ARCH_CPU_X86_FAMILY) || defined(ARCH_CPU_ARM64) || \
+-    defined(ARCH_CPU_RISCV64)
++    defined(ARCH_CPU_RISCV64) || defined(ARCH_CPU_RISCV32)
+   using NativeThreadContext = user_regs_struct;
+ #elif defined(ARCH_CPU_ARMEL)
+   using NativeThreadContext = user_regs;
+@@ -233,6 +240,11 @@ union FloatContext {
+     uint32_t fpu_id;
+ #elif defined(ARCH_CPU_RISCV64)
+     // 32 bit RISC-V not supported
++#elif defined(ARCH_CPU_RISCV32)
++    // chromium-rv32 patch: rv32gc uses ilp32d ABI; mirrors
++    // __riscv_d_ext_state (32 doubles + fcsr).
++    uint64_t fpregs[32];
++    uint32_t fcsr;
+ #else
+ #error Port.
+ #endif  // ARCH_CPU_X86_FAMILY
+@@ -271,6 +283,8 @@ union FloatContext {
+     // Reflects __riscv_d_ext_state in asm/ptrace.h
+     uint64_t fpregs[32];
+     uint64_t fcsr;
++#elif defined(ARCH_CPU_RISCV32)
++    // chromium-rv32 patch: no 64-bit variant on rv32.
+ #else
+ #error Port.
+ #endif  // ARCH_CPU_X86_FAMILY
+@@ -302,6 +316,9 @@ union FloatContext {
+ // No appropriate floating point context native type for available MIPS.
+ #elif defined(ARCH_CPU_RISCV64)
+   static_assert(sizeof(f64) == sizeof(__riscv_d_ext_state), "Size mismatch");
++#elif defined(ARCH_CPU_RISCV32)
++  // chromium-rv32 patch: rv32gc + ilp32d -> __riscv_d_ext_state.
++  static_assert(sizeof(f32) == sizeof(__riscv_d_ext_state), "Size mismatch");
+ #else
+ #error Port.
+ #endif  // ARCH_CPU_X86
+diff --git a/third_party/crashpad/crashpad/util/misc/capture_context_linux.S b/third_party/crashpad/crashpad/util/misc/capture_context_linux.S
+index cfad85738e..c624bf8d7e 100644
+--- a/third_party/crashpad/crashpad/util/misc/capture_context_linux.S
++++ b/third_party/crashpad/crashpad/util/misc/capture_context_linux.S
+@@ -430,7 +430,7 @@ CAPTURECONTEXT_SYMBOL2:
+ 
+   .set at
+ 
+-#elif defined(__riscv)
++#elif defined(__riscv) && __riscv_xlen == 64
+ 
+   #define MCONTEXT_GREGS_OFFSET 176
+ 
+@@ -510,4 +510,90 @@ CAPTURECONTEXT_SYMBOL2:
+ 
+   ret
+ 
++#elif defined(__riscv) && __riscv_xlen == 32
++
++  // chromium-rv32 patch: rv32gc + ilp32d. Uses sw/lw for GPRs (4-byte
++  // each) and fsd/fld for FPRs (still 64-bit in ilp32d).
++  // Layout mirrors mcontext_t.__gregs (32 ulongs) + __fpregs.f[32]
++  // (32 doubles) + fcsr. Offsets are sized by --target=riscv32-linux-gnu
++  // libc; using literal byte offsets keeps the asm self-contained.
++  #define MCONTEXT_GREGS_OFFSET_RV32 176
++  #define MCONTEXT_FPREGS_OFFSET_RV32 (MCONTEXT_GREGS_OFFSET_RV32 + 32*4)
++
++  // x1/ra is the return address. Use it as the captured pc.
++  // The original x10/a0 is clobbered by the call ABI; we don't
++  // recover it (this matches the rv64 path).
++  sw x1, (0  * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x1, (1  * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x2, (2  * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x3, (3  * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x4, (4  * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x5, (5  * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x6, (6  * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x7, (7  * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x8, (8  * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x9, (9  * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x10,(10 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x11,(11 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x12,(12 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x13,(13 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x14,(14 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x15,(15 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x16,(16 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x17,(17 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x18,(18 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x19,(19 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x20,(20 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x21,(21 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x22,(22 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x23,(23 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x24,(24 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x25,(25 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x26,(26 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x27,(27 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x28,(28 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x29,(29 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x30,(30 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++  sw x31,(31 * 4 + MCONTEXT_GREGS_OFFSET_RV32)(a0)
++
++  // fcsr (32-bit, stored at the end of the f-state block).
++  frcsr x31
++  sw x31, (32 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++
++  // d-mode FP regs (each 64 bits even in ilp32d).
++  fsd f0,  (0  * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f1,  (1  * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f2,  (2  * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f3,  (3  * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f4,  (4  * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f5,  (5  * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f6,  (6  * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f7,  (7  * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f8,  (8  * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f9,  (9  * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f10, (10 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f11, (11 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f12, (12 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f13, (13 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f14, (14 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f15, (15 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f16, (16 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f17, (17 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f18, (18 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f19, (19 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f20, (20 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f21, (21 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f22, (22 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f23, (23 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f24, (24 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f25, (25 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f26, (26 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f27, (27 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f28, (28 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f29, (29 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f30, (30 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++  fsd f31, (31 * 8 + MCONTEXT_FPREGS_OFFSET_RV32)(a0)
++
++  ret
++
+ #endif  // __i386__
+diff --git a/third_party/fontconfig/BUILD.gn b/third_party/fontconfig/BUILD.gn
+index ef05877eed..199a2b2c1e 100644
+--- a/third_party/fontconfig/BUILD.gn
++++ b/third_party/fontconfig/BUILD.gn
+@@ -160,7 +160,9 @@ if (use_bundled_fontconfig) {
+       ]
+     }
+ 
+-    if (!is_win) {
++    if (!is_win && current_cpu != "riscv32") {
++      # chromium-rv32 patch: our buildroot sysroot does not ship
++      # libuuid; fontconfig has an internal fallback for cache UUIDs.
+       libs = [ "uuid" ]
+     }
+   }

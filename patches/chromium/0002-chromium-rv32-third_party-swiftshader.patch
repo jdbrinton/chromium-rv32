@@ -1,0 +1,50 @@
+diff --git a/third_party/llvm-10.0/BUILD.gn b/third_party/llvm-10.0/BUILD.gn
+index f99abba..62ce6e3 100644
+--- a/third_party/llvm-10.0/BUILD.gn
++++ b/third_party/llvm-10.0/BUILD.gn
+@@ -159,6 +159,12 @@ swiftshader_llvm_source_set("swiftshader_llvm") {
+     deps += [ ":swiftshader_llvm_ppc" ]
+   } else if (current_cpu == "riscv64") {
+     deps += [ ":swiftshader_llvm_riscv64" ]
++  } else if (current_cpu == "riscv32") {
++    # chromium-rv32 patch: bundled llvm-10/16 has no rv32 backend, so
++    # point at the riscv64 target. content_shell never links swiftshader,
++    # so this is parse-time satisfaction only; if anything actually tries
++    # to compile it the build will fail loudly.
++    deps += [ ":swiftshader_llvm_riscv64" ]
+   } else if (current_cpu == "x86" || current_cpu == "x64") {
+     deps += [ ":swiftshader_llvm_x86" ]
+   } else {
+diff --git a/third_party/llvm-16.0/BUILD.gn b/third_party/llvm-16.0/BUILD.gn
+index 891a790..75b2119 100644
+--- a/third_party/llvm-16.0/BUILD.gn
++++ b/third_party/llvm-16.0/BUILD.gn
+@@ -176,6 +176,12 @@ swiftshader_llvm_source_set("swiftshader_llvm") {
+     deps += [ ":swiftshader_llvm_ppc" ]
+   } else if (current_cpu == "riscv64") {
+     deps += [ ":swiftshader_llvm_riscv64" ]
++  } else if (current_cpu == "riscv32") {
++    # chromium-rv32 patch: bundled llvm-10/16 has no rv32 backend, so
++    # point at the riscv64 target. content_shell never links swiftshader,
++    # so this is parse-time satisfaction only; if anything actually tries
++    # to compile it the build will fail loudly.
++    deps += [ ":swiftshader_llvm_riscv64" ]
+   } else if (current_cpu == "x86" || current_cpu == "x64") {
+     deps += [ ":swiftshader_llvm_x86" ]
+   } else {
+diff --git a/third_party/marl/BUILD.gn b/third_party/marl/BUILD.gn
+index 4c02648..c5822c5 100644
+--- a/third_party/marl/BUILD.gn
++++ b/third_party/marl/BUILD.gn
+@@ -107,6 +107,11 @@ swiftshader_source_set("Marl") {
+         "src/osfiber_asm_x86.h",
+         "src/osfiber_asm_x86.S",
+       ]
++    } else if (current_cpu == "riscv32") {
++      # chromium-rv32 patch: no native rv32 fiber asm in marl. Fall back
++      # to the portable glibc ucontext_t path. Slower but content_shell
++      # only reaches marl via SwiftShader/Vulkan which we never link.
++      defines = [ "MARL_FIBERS_USE_UCONTEXT" ]
+     } else {
+       assert(false, "Unhandled value for current-cpu=" + current_cpu)
+     }

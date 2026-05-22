@@ -1,0 +1,42 @@
+#!/bin/sh
+#
+# Boot-time hook: at the tail of buildroot's rcS but before S99-run-d8,
+# run the chromium-rv32 M5 acceptance script. Mirrors S99-run-d8 from the
+# M2 overlay.
+#
+# Skipped if /etc/no-autorun-content-shell-m5 exists or if the kernel
+# command-line carries the token `no-autorun-content-shell-m5`. The latter
+# lets `70-boot-chromium-guest.sh --no-autorun` route around this hook
+# without rebuilding the rootfs.
+
+case "$1" in
+start)
+	if [ -e /etc/no-autorun-content-shell-m5 ]; then
+		echo "S98-run-content-shell-m5: /etc/no-autorun-content-shell-m5 present; skipping"
+		exit 0
+	fi
+	if grep -qw no-autorun-content-shell-m5 /proc/cmdline 2>/dev/null; then
+		echo "S98-run-content-shell-m5: no-autorun-content-shell-m5 on cmdline; skipping"
+		exit 0
+	fi
+	# If the chromium ext4 isn't attached (e.g. plain M2 boot via
+	# 70-boot-guest.sh), S97-mount-chromium-rootfs left
+	# /usr/local/chromium empty. In that case skip the M5 hook so
+	# S99-run-d8 still runs the M2 acceptance.
+	if [ ! -x /usr/local/chromium/content_shell ]; then
+		echo "S98-run-content-shell-m5: /usr/local/chromium/content_shell not present; skipping (M2-only boot)"
+		exit 0
+	fi
+	if [ -x /usr/local/share/m5-content-shell/m5-acceptance.sh ]; then
+		/usr/local/share/m5-content-shell/m5-acceptance.sh
+	else
+		echo "S98-run-content-shell-m5: /usr/local/share/m5-content-shell/m5-acceptance.sh missing"
+	fi
+	;;
+stop)
+	;;
+*)
+	echo "Usage: $0 {start|stop}"
+	exit 1
+	;;
+esac

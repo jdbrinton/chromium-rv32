@@ -1,0 +1,42 @@
+# Buildroot config that builds *just* an rv32 glibc + libstdc++ sysroot
+# plus the riscv32-buildroot-linux-gnu-* cross binaries. No kernel, no
+# rootfs image. We mirror the sysroot under chromium-rv32/toolchain/sysroot/
+# and Chromium/V8 link against it.
+
+BR2_riscv=y
+BR2_RISCV_32=y
+BR2_RISCV_ISA_RVI=y
+BR2_RISCV_ISA_RVM=y
+BR2_RISCV_ISA_RVA=y
+BR2_RISCV_ISA_RVF=y
+BR2_RISCV_ISA_RVD=y
+BR2_RISCV_ISA_RVC=y
+
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_18=y
+
+# We don't need a kernel, OpenSBI, or rootfs from this tree. We just want
+# the cross toolchain + sysroot.
+# (Don't enable BR2_LINUX_KERNEL, BR2_TARGET_OPENSBI, BR2_TARGET_ROOTFS_*.)
+
+BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
+BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
+BR2_GENERATE_LOCALE="en_US.UTF-8"
+
+# Provide a few system libs we know Chromium/V8 will eventually want at
+# the LINK step. Building them via buildroot guarantees they're in the
+# sysroot at consistent ABI levels.
+BR2_PACKAGE_ZLIB=y
+BR2_PACKAGE_OPENSSL=y
+BR2_PACKAGE_LIBCURL=y
+BR2_PACKAGE_EXPAT=y
+BR2_PACKAGE_FREETYPE=y
+BR2_PACKAGE_FONTCONFIG=y
+BR2_PACKAGE_LIBPNG=y
+BR2_PACKAGE_JPEG=y
+BR2_PACKAGE_DBUS=y
+
+# Also build host qemu-user-mode so we get qemu-riscv32 for quick
+# binary smoke tests without needing root to apt-install qemu-user-static.
+BR2_PACKAGE_HOST_QEMU=y
+BR2_PACKAGE_HOST_QEMU_LINUX_USER_MODE=y
