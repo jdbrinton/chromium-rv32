@@ -11,6 +11,13 @@ real interactive GUI session.
 > quality. Several known V8 correctness issues are deferred (see
 > [`docs/known-limitations.md`](docs/known-limitations.md)).
 
+![Svelte 5 demo rendered by rv32 content_shell under qemu-system-riscv32; all four indicator lights are green](artifacts/example-m6-all-green.png)
+
+> *Above: the Svelte 5 demo as rendered by `content_shell` inside the
+> rv32 guest. The PNG was captured via `Page.captureScreenshot` after
+> the page emitted `m6:all-green` — i.e. SSR hydration, DOM update,
+> `fetch` POST, and the SSE stream had all converged.*
+
 ## What this project actually proves
 
 When you run the documented sequence to completion, a **rv32 build of
@@ -25,10 +32,7 @@ guest:
 | SSE / Server-Sent Events | `m6:sse-tick:n=<n>:at=<iso>` per second from the `/sse` endpoint. |
 | Convergence | `m6:all-green` is logged by a Svelte `$effect` once all four lights are on. |
 | Real pixels | `Page.captureScreenshot` returns a PNG showing the four dots green. |
-| Mouse + keyboard input | A host-side CDP→RFB bridge streams content_shell's framebuffer to any VNC client and forwards pointer/key events back as CDP `Input.dispatch*` calls. |
-
-[`artifacts/example-m6-all-green.png`](artifacts/example-m6-all-green.png)
-is one such captured frame.
+| Mouse + keyboard input | A host-side CDP→RFB bridge streams content_shell's framebuffer to any VNC client and forwards pointer/key events back as CDP `Input.dispatch*` calls. See [`artifacts/example-m7-click-proof.png`](artifacts/example-m7-click-proof.png) for a post-click frame. |
 
 ## What this is **not**
 
